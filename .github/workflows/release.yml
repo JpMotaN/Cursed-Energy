@@ -1,0 +1,122 @@
+name: Release to Foundry
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Ensure jq and zip
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq zip
+
+      # Extrai versão da tag (ex.: v0.5.0 -> 0.5.0)
+      - name: Parse version from tag
+        id: v
+        run: |
+          RAW_TAG="${GITHUB_REF_NAME:-${{ github.event.release.tag_name }}}"
+          CLEAN="${RAW_TAG#v}"
+          echo "version=${CLEAN}" >> "$GITHUB_OUTPUT"
+
+      # Gera module.json versionado para o Release (com download/manifest do próprio tag)
+      - name: Build versioned module.json
+        run: |
+          VERSION="${{ steps.v.outputs.version }}"
+          REPO="${{ github.repository }}"
+          TAG="${{ github.event.release.tag_name }}"
+          # URLs de release (assets):
+          # - module.json: https://github.com/OWNER/REPO/releases/download/TAG/module.json
+          # - zip:         https://github.com/OWNER/REPO/releases/download/TAG/cursed-energy-${VERSION}.zip
+          MANIFEST_URL="https://github.com/${REPO}/releases/download/${TAG}/module.json"
+          DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${TAG}/cursed-energy-${VERSION}.zip"
+
+          jq \
+            --arg v "$VERSION" \
+            --arg dl "$DOWNLOAD_URL" \
+            --arg man "$MANIFEST_URL" \
+            '
+            .version = $v
+            | .download = $dl
+            | .manifest = $man
+            ' module.json > /tmp/module.json
+
+          echo "Final module.json:"
+          cat /tmp/module.json
+
+      # Zipa o módulo (conteúdo do repo). Ajuste os -x se tiver arquivos que não quer incluir.
+      - name: Create ZIP artifact
+        run: |
+          VERSION="${{ steps.v.outputs.version }}"
+          ZIP="cursed-energy-${VERSION}.zip"
+          # Exclui coisas que não devem ir no zip
+          zip -r "$ZIP" . \
+            -x ".git/*" \
+            -x ".github/*" \
+            -x "node_modules/*"
+
+          echo "ZIP=$ZIP" >> $GITHUB_ENV
+
+      # Anexa module.json + zip ao Release
+      - name: Upload assets to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.release.tag_name }}
+          files: |
+            /tmp/module.json
+            ${{ env.ZIP }}
+
+      # (OPÇÃO A) Usar a action pronta do Marketplace para publicar no Foundry
+      - name: Publish to Foundry (via marketplace action)
+        uses: cs96and/FoundryVTT-release-package@v1
+        with:
+          package-token: ${{ secrets.FOUNDRY_PACKAGE_TOKEN }}
+          manifest-url: https://github.com/${{ github.repository }}/releases/download/${{ github.event.release.tag_name }}/module.json
+        # Observação: essa action lê version/notes do module.json se quiser.
+        # Documentação da action: inputs e comportamento. :contentReference[oaicite:1]{index=1}
+
+      # (OPÇÃO B) Alternativa com curl direto na API oficial (descomente se preferir curl em vez da action acima)
+      # - name: Publish to Foundry (direct API)
+      #   env:
+      #     FOUNDRY_TOKEN: ${{ secrets.FOUNDRY_PACKAGE_TOKEN }}
+      #   run: |
+      #     PKG_ID="cursed-energy"  # <- deve casar com o "id" do module.json
+      #     VERSION="${{ steps.v.outputs.version }}"
+      #     MANIFEST_URL="https://github.com/${{ github.repository }}/releases/download/${{ github.event.release.tag_name }}/module.json"
+      #     NOTES_URL="https://github.com/${{ github.repository }}/releases/tag/${{ github.event.release.tag_name }}"
+      #
+      #     # Compat compatibilidade: pegue do module.json base (ou defina fixo aqui)
+      #     MIN=$(jq -r '.compatibility.minimum' module.json)
+      #     VER=$(jq -r '.compatibility.verified' module.json)
+      #     MAX=$(jq -r '.compatibility.maximum // ""' module.json)
+      #
+      #     BODY=$(jq -n \
+      #       --arg id "$PKG_ID" \
+      #       --arg version "$VERSION" \
+      #       --arg manifest "$MANIFEST_URL" \
+      #       --arg notes "$NOTES_URL" \
+      #       --arg min "$MIN" --arg ver "$VER" --arg max "$MAX" \
+      #       '{
+      #          id: $id,
+      #          release: {
+      #            version: $version,
+      #            manifest: $manifest,
+      #            notes: $notes,
+      #            compatibility: { minimum: $min, verified: $ver, maximum: $max }
+      #          }
+      #        }')
+      #
+      #     echo "$BODY" | jq .
+      #
+      #     curl -fSL https://foundryvtt.com/_api/packages/release_version/ \
+      #       -H "Content-Type: application/json" \
+      #       -H "Authorization: ${FOUNDRY_TOKEN}" \
+      #       -d "$BODY"
+      #
+      #     # API oficial do Foundry com exemplo de payload. :contentReference[oaicite:2]{index=2}
