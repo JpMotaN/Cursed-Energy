@@ -2,11 +2,11 @@ name: Release to Foundry
 
 on:
   release:
-    types: [published]
-  workflow_dispatch: {}
+    types: [published]   # dispara quando o Release é publicado (não draft)
+  workflow_dispatch: {}  # permite rodar manualmente
 
 permissions:
-  contents: write  # necessário para anexar assets no release
+  contents: write        # ESSENCIAL para anexar/atualizar assets no release
 
 jobs:
   publish:
@@ -24,7 +24,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y jq zip curl
 
-      # Versão X.Y.Z a partir de vX.Y.Z
+      # Extrai 0.1.0 a partir de v0.1.0
       - name: Parse version from tag
         id: v
         run: |
@@ -32,14 +32,14 @@ jobs:
           CLEAN="${RAW_TAG#v}"
           echo "version=${CLEAN}" >> "$GITHUB_OUTPUT"
 
-      # Sanitiza e valida module.json base
+      # Checa module.json base por campos obrigatórios
       - name: Validate base module.json
         run: |
           test -f module.json || (echo "module.json not found at repo root" && exit 1)
-          jq -e '.id and .title and .version and .compatibility.minimum and .compatibility.verified' module.json >/dev/null \
-            || (echo "Missing required fields in module.json" && exit 1)
+          jq -e '.id and .title and .compatibility.minimum and .compatibility.verified' module.json >/dev/null \
+            || (echo "Missing required fields in module.json (id/title/compatibility)" && exit 1)
 
-      # Cria a versão do module.json para o release (manifest/download apontando para a tag)
+      # Gera module.json da versão do Release (manifest/download apontando para a TAG)
       - name: Build versioned module.json (for release)
         run: |
           VERSION="${{ steps.v.outputs.version }}"
@@ -47,13 +47,13 @@ jobs:
           DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${TAG}/cursed-energy-${VERSION}.zip"
 
           jq --arg v "$VERSION" --arg dl "$DOWNLOAD_URL" --arg man "$MANIFEST_URL" \
-            '.version=$v | .download=$dl | .manifest=$man' \
-            module.json > /tmp/module.json
+             '.version=$v | .download=$dl | .manifest=$man' \
+             module.json > /tmp/module.json
 
           echo "Final module.json:"
           cat /tmp/module.json
 
-      # Cria o zip do módulo
+      # Cria o ZIP do módulo (ajuste exclusões conforme seu repo)
       - name: Create ZIP artifact
         run: |
           VERSION="${{ steps.v.outputs.version }}"
@@ -62,16 +62,17 @@ jobs:
             -x ".git/*" ".github/*" "node_modules/*"
           echo "ZIP=$ZIP" >> $GITHUB_ENV
 
-      # Anexa assets ao release
+      # Anexa module.json (da /tmp) + zip ao Release publicado
       - name: Upload assets to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.event.release.tag_name }}
+          token: ${{ secrets.GITHUB_TOKEN }}               # explicita o token
+          tag_name: ${{ github.event.release.tag_name }}   # vX.Y.Z
           files: |
             /tmp/module.json
             ${{ env.ZIP }}
 
-      # Aguarda o asset do module.json ficar servindo (evita 404 na API do Foundry)
+      # Aguarda o asset ficar disponível (evita 404 quando a API do Foundry buscar o manifest)
       - name: Wait for manifest asset to be available
         run: |
           URL="https://github.com/${REPO}/releases/download/${TAG}/module.json"
@@ -85,42 +86,10 @@ jobs:
           echo "Manifest asset not reachable in time"
           exit 1
 
-      # ====== OPÇÃO A: Action do marketplace ======
-      - name: Publish to Foundry (action)
-        if: ${{ !cancelled() }}
+      # Publica no Foundry (Package Repository)
+      - name: Publish to Foundry (marketplace action)
         uses: cs96and/FoundryVTT-release-package@v1
         with:
-          package-token: ${{ secrets.FOUNDRY_PACKAGE_TOKEN }}
+          package-token: ${{ secrets.FOUNDRY_PACKAGE_TOKEN }}  # crie esse Secret
           manifest-url: https://github.com/${{ github.repository }}/releases/download/${{ github.event.release.tag_name }}/module.json
-          # dry-run: true  # use true para testar sem publicar
-
-      # ====== OPÇÃO B: API direta com logs (descomente e comente a opção A) ======
-      # - name: Publish to Foundry (direct API)
-      #   env:
-      #     FOUNDRY_TOKEN: ${{ secrets.FOUNDRY_PACKAGE_TOKEN }}
-      #   run: |
-      #     PKG_ID=$(jq -r '.id' module.json)
-      #     VERSION="${{ steps.v.outputs.version }}"
-      #     MANIFEST_URL="https://github.com/${REPO}/releases/download/${TAG}/module.json"
-      #     NOTES_URL="https://github.com/${REPO}/releases/tag/${TAG}"
-      #     MIN=$(jq -r '.compatibility.minimum' module.json)
-      #     VER=$(jq -r '.compatibility.verified' module.json)
-      #     MAX=$(jq -r '.compatibility.maximum // ""' module.json)
-      #
-      #     BODY=$(jq -n --arg id "$PKG_ID" --arg version "$VERSION" \
-      #               --arg manifest "$MANIFEST_URL" --arg notes "$NOTES_URL" \
-      #               --arg min "$MIN" --arg ver "$VER" --arg max "$MAX" \
-      #               '{id:$id, release:{version:$version, manifest:$manifest, notes:$notes, compatibility:{minimum:$min, verified:$ver, maximum:$max}}}')
-      #
-      #     echo "POST body:"; echo "$BODY" | jq .
-      #
-      #     set -e
-      #     RESP=$(curl -sS -w "\n%{http_code}\n" -X POST \
-      #       -H "Content-Type: application/json" \
-      #       -H "Authorization: ${FOUNDRY_TOKEN}" \
-      #       -d "$BODY" \
-      #       https://foundryvtt.com/_api/packages/release_version/ )
-      #
-      #     echo "Response:"; echo "$RESP"
-      #     CODE=$(echo "$RESP" | tail -n1)
-      #     [ "$CODE" = "200" ] || [ "$CODE" = "201" ] || (echo "Foundry API error ($CODE)"; exit 1)
+          # dry-run: true  # descomente para testar sem publicar
