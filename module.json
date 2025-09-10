@@ -2,22 +2,21 @@
   "id": "cursed-energy",
   "title": "Cursed Energy",
   "description": "Substitui espaços de magia por Energia Amaldiçoada (EA). UI na ficha, diálogo sem slots e consumo por EA.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "authors": [{ "name": "Jotape" }],
   "compatibility": { "minimum": "12", "verified": "13" },
   "relationships": {
     "systems": [{ "id": "dnd5e", "type": "system", "compatibility": { "minimum": "2" } }]
   },
   "languages": [
-  { "lang": "en", "name": "English", "path": "lang/en.json" },
-  { "lang": "pt-BR", "name": "Português (Brasil)", "path": "lang/pt-BR.json" }
-],
-
+    { "lang": "en", "name": "English", "path": "lang/en.json" },
+    { "lang": "pt-BR", "name": "Português (Brasil)", "path": "lang/pt-BR.json" }
+  ],
   "esmodules": ["scripts/main.js"],
   "styles": ["styles/app.css"],
-  "url": "https://github.com/JpMotaN/cursed-energy",
-  "manifest": "https://raw.githubusercontent.com/JpMotaN/cursed-energy/main/module.json",
-  "download": "https://github.com/JpMotaN/cursed-energy/releases/latest/download/cursed-energy.zip",
+  "url": "https://github.com/JpMotaN/Cursed-Energy",
+  "manifest": "https://raw.githubusercontent.com/JpMotaN/Cursed-Energy/main/module.json",
+  "download": "https://github.com/JpMotaN/Cursed-Energy/releases/latest/download/cursed-energy.zip",
   "license": "LICENSE",
   "flags": {}
 }
