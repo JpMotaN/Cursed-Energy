@@ -1,80 +1,97 @@
-name: Release to Foundry
+name: Release
 
 on:
-  release:
-    types: [published]   # dispara quando o Release é publicado (não draft)
-  workflow_dispatch: {}  # permite rodar manualmente
+  push:
+    tags:
+      - 'v*.*.*'     # ex.: v0.1.1
+  workflow_dispatch: {}
 
 permissions:
-  contents: write        # ESSENCIAL para anexar/atualizar assets no release
+  contents: write     # necessário para criar/editar release e subir assets
 
 jobs:
-  publish:
+  build-and-release:
     runs-on: ubuntu-latest
-    env:
-      REPO: ${{ github.repository }}
-      TAG:  ${{ github.event.release.tag_name }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Ensure jq & zip
+      - name: Ensure tools
         run: |
           sudo apt-get update
           sudo apt-get install -y jq zip curl
 
-      # Extrai 0.1.0 a partir de v0.1.0
-      - name: Parse version from tag
-        id: v
+      - name: Get version from tag
+        id: vars
         run: |
-          RAW_TAG="${TAG:-${GITHUB_REF_NAME}}"
-          CLEAN="${RAW_TAG#v}"
-          echo "version=${CLEAN}" >> "$GITHUB_OUTPUT"
+          RAW_REF="${GITHUB_REF#refs/tags/}"   # v0.1.1
+          VERSION="${RAW_REF#v}"               # 0.1.1
+          echo "tag=$RAW_REF" >> $GITHUB_OUTPUT
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
 
-      # Checa module.json base por campos obrigatórios
+      # Valida module.json base (precisa existir na raiz)
       - name: Validate base module.json
         run: |
           test -f module.json || (echo "module.json not found at repo root" && exit 1)
           jq -e '.id and .title and .compatibility.minimum and .compatibility.verified' module.json >/dev/null \
             || (echo "Missing required fields in module.json (id/title/compatibility)" && exit 1)
 
-      # Gera module.json da versão do Release (manifest/download apontando para a TAG)
-      - name: Build versioned module.json (for release)
+      # Atualiza version + URLs para o release/tag ATUAL
+      - name: Update module.json (version + download + manifest)
         run: |
-          VERSION="${{ steps.v.outputs.version }}"
+          REPO="${{ github.repository }}"
+          VERSION="${{ steps.vars.outputs.version }}"
+          TAG="${{ steps.vars.outputs.tag }}"
           MANIFEST_URL="https://github.com/${REPO}/releases/download/${TAG}/module.json"
           DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${TAG}/cursed-energy-${VERSION}.zip"
 
           jq --arg v "$VERSION" --arg dl "$DOWNLOAD_URL" --arg man "$MANIFEST_URL" \
              '.version=$v | .download=$dl | .manifest=$man' \
-             module.json > /tmp/module.json
+             module.json > module.tmp.json
+          mv module.tmp.json module.json
 
-          echo "Final module.json:"
-          cat /tmp/module.json
+          echo "module.json updated:"
+          cat module.json
 
-      # Cria o ZIP do módulo (ajuste exclusões conforme seu repo)
-      - name: Create ZIP artifact
+      # Monta o zip do módulo (ajuste a lista conforme sua pasta)
+      - name: Build zip
         run: |
-          VERSION="${{ steps.v.outputs.version }}"
-          ZIP="cursed-energy-${VERSION}.zip"
-          zip -r "$ZIP" . \
-            -x ".git/*" ".github/*" "node_modules/*"
-          echo "ZIP=$ZIP" >> $GITHUB_ENV
+          VERSION="${{ steps.vars.outputs.version }}"
+          mkdir -p dist
+          zip -r "dist/cursed-energy-${VERSION}.zip" \
+            module.json \
+            lang \
+            scripts \
+            styles \
+            templates \
+            --exclude '*.git*' \
+            --exclude 'dist/*' \
+            --exclude '.github/*'
 
-      # Anexa module.json (da /tmp) + zip ao Release publicado
-      - name: Upload assets to GitHub Release
+      # Cria o Release (com a tag que disparou) e anexa assets
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}               # explicita o token
-          tag_name: ${{ github.event.release.tag_name }}   # vX.Y.Z
-          files: |
-            /tmp/module.json
-            ${{ env.ZIP }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          tag_name: ${{ steps.vars.outputs.tag }}                   # vX.Y.Z
+          name: Cursed Energy ${{ steps.vars.outputs.tag }}
+          body: |
+            Release ${{ steps.vars.outputs.tag }}
 
-      # Aguarda o asset ficar disponível (evita 404 quando a API do Foundry buscar o manifest)
-      - name: Wait for manifest asset to be available
+            - Auto-generated .zip for Foundry VTT
+            - module.json updated with version, download and manifest
+          draft: false
+          prerelease: false
+          files: |
+            dist/cursed-energy-${{ steps.vars.outputs.version }}.zip
+            module.json
+
+      # Espera o asset module.json do release ficar acessível (evita 404 na API do Foundry)
+      - name: Wait for manifest to be available
         run: |
+          REPO="${{ github.repository }}"
+          TAG="${{ steps.vars.outputs.tag }}"
           URL="https://github.com/${REPO}/releases/download/${TAG}/module.json"
           echo "Waiting for $URL"
           for i in {1..12}; do
@@ -86,10 +103,10 @@ jobs:
           echo "Manifest asset not reachable in time"
           exit 1
 
-      # Publica no Foundry (Package Repository)
-      - name: Publish to Foundry (marketplace action)
+      # Publica no Foundry Package Repository
+      - name: Publish to Foundry Package Repository
         uses: cs96and/FoundryVTT-release-package@v1
         with:
-          package-token: ${{ secrets.FOUNDRY_PACKAGE_TOKEN }}  # crie esse Secret
-          manifest-url: https://github.com/${{ github.repository }}/releases/download/${{ github.event.release.tag_name }}/module.json
+          package-token: ${{ secrets.FOUNDRY_PACKAGE_TOKEN }}   # CRIE ESSE SECRET
+          manifest-url: https://github.com/${{ github.repository }}/releases/download/${{ steps.vars.outputs.tag }}/module.json
           # dry-run: true  # descomente para testar sem publicar
